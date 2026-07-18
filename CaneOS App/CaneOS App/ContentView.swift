@@ -327,15 +327,27 @@ struct HomeView: View {
     }
 
     private var watchPill: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
             Image(systemName: isWatchConnected ? "applewatch" : "applewatch.slash")
+                .font(.title3)
                 .foregroundColor(isWatchConnected ? .caneBlue : Color(white: 0.40))
-            Text(isWatchConnected ? "Watch connected" : "Watch not reachable")
-                .font(.subheadline)
-                .foregroundColor(Color(white: 0.60))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Apple Watch")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+                Text(isWatchConnected ? "Connected" : "Not reachable")
+                    .font(.caption)
+                    .foregroundColor(isWatchConnected ? .green : Color(white: 0.50))
+            }
             Spacer()
+            Circle()
+                .fill(isWatchConnected ? Color.green : Color(white: 0.25))
+                .frame(width: 8, height: 8)
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.caneCard)
+        .cornerRadius(14)
         .accessibilityLabel(isWatchConnected
             ? "Apple Watch connected"
             : "Apple Watch not reachable")
@@ -397,12 +409,11 @@ struct SettingsView: View {
     var body: some View {
         ZStack {
             Color.caneNavy.ignoresSafeArea()
-            Form {
+            List {
                 Section {
                     settingRow(
-                        icon: "waveform.path",
                         title: "Haptic Intensity",
-                        hint: "Adjusts vibration motor strength on the clip module. Currently \(settings.hapticIntensity.label)"
+                        hint: "Adjusts vibration strength on the clip module. Currently \(settings.hapticIntensity.label)"
                     ) {
                         Picker("Haptic Intensity", selection: $settings.hapticIntensity) {
                             ForEach(AppSettings.HapticIntensity.allCases) { level in
@@ -411,13 +422,14 @@ struct SettingsView: View {
                         }
                         .pickerStyle(.segmented)
                     }
-                } header: { Text("Vibration") }
+                } header: {
+                    sectionHeader(icon: "waveform.path", title: "Vibration")
+                }
 
                 Section {
                     settingRow(
-                        icon: "sensor.tag.radiowaves.forward",
                         title: "Detection Sensitivity",
-                        hint: "Controls how aggressively the time-of-flight sensor flags movement. Currently \(settings.sensitivityLevel.label)"
+                        hint: "Controls how aggressively the sensor flags movement. Currently \(settings.sensitivityLevel.label)"
                     ) {
                         Picker("Sensitivity", selection: $settings.sensitivityLevel) {
                             ForEach(AppSettings.SensitivityLevel.allCases) { level in
@@ -426,38 +438,62 @@ struct SettingsView: View {
                         }
                         .pickerStyle(.segmented)
                     }
-                } header: { Text("Sensor") }
+                } header: {
+                    sectionHeader(icon: "sensor.tag.radiowaves.forward", title: "Sensor")
+                }
 
                 Section {
                     Toggle(isOn: $settings.audioEnabled) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Label("Hazard Narration", systemImage: "speaker.wave.2.fill")
-                                .foregroundColor(.primary)
+                            Text("Hazard Narration")
+                                .font(.body.weight(.semibold))
+                                .foregroundColor(.white)
                             Text("Spoken obstacle descriptions via headphones")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(Color(white: 0.55))
                         }
                     }
                     .tint(.caneBlue)
+                    .listRowBackground(Color.caneCard)
                     .accessibilityLabel("Hazard audio narration \(settings.audioEnabled ? "on" : "off")")
-                    .accessibilityHint("Toggles ElevenLabs spoken descriptions for detected obstacles")
-                } header: { Text("Audio") }
+                    .accessibilityHint("Toggles spoken descriptions for detected obstacles")
+                } header: {
+                    sectionHeader(icon: "speaker.wave.2.fill", title: "Audio")
+                }
             }
+            .listStyle(.plain)
             .scrollContentBackground(.hidden)
         }
+        .toolbarBackground(Color.caneNavy, for: .navigationBar)
+        .toolbarColorScheme(.dark, for: .navigationBar)
+    }
+
+    private func sectionHeader(icon: String, title: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundColor(.caneBlue)
+                .font(.subheadline.weight(.medium))
+            Text(title)
+                .font(.headline)
+                .foregroundColor(.white)
+        }
+        .textCase(nil)
+        .padding(.top, 6)
     }
 
     @ViewBuilder
     private func settingRow<Content: View>(
-        icon: String, title: String, hint: String,
+        title: String, hint: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: icon)
-                .font(.body.weight(.medium))
+            Text(title)
+                .font(.body.weight(.semibold))
+                .foregroundColor(.white)
             content()
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+        .listRowBackground(Color.caneCard)
         .accessibilityElement(children: .combine)
         .accessibilityHint(hint)
     }
