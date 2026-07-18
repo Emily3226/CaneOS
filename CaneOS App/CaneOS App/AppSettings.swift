@@ -39,6 +39,7 @@ final class AppSettings: ObservableObject {
     @Published var hapticIntensity: HapticIntensity {
         didSet {
             UserDefaults.standard.set(hapticIntensity.rawValue, forKey: "hapticIntensity")
+            PhoneSessionManager.shared.syncHapticIntensity(hapticIntensity.rawValue)
             pushIfLoggedIn()
         }
     }

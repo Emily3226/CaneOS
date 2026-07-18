@@ -21,8 +21,13 @@ final class PhoneSessionManager: NSObject, ObservableObject, WCSessionDelegate {
     // Uses HapticSensorDirection (defined in CaneMessage.swift) directly --
     // it already mirrors /ws/haptics exactly (3 physical sensors, 3 possible
     // values), so there's no separate phone-side direction type to keep in sync.
+    // The phone's intensity setting rides along with every buzz so the Watch
+    // always plays at whatever strength is currently set in the phone app.
     func sendHaptic(_ direction: HapticSensorDirection) {
-        let message: [String: Any] = ["direction": direction.rawValue]
+        let message: [String: Any] = [
+            "direction": direction.rawValue,
+            "intensity": AppSettings.shared.hapticIntensity.rawValue
+        ]
         guard WCSession.default.isReachable else {
             WCSession.default.transferUserInfo(message)
             return
@@ -30,6 +35,15 @@ final class PhoneSessionManager: NSObject, ObservableObject, WCSessionDelegate {
         WCSession.default.sendMessage(message, replyHandler: nil) { error in
             print("Haptic send failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Mirrors the phone's haptic intensity setting to the Watch.
+    /// updateApplicationContext is fire-and-forget, survives the Watch app
+    /// being closed, and only ever delivers the latest value — exactly the
+    /// semantics a settings value needs.
+    func syncHapticIntensity(_ intensity: String) {
+        guard WCSession.default.activationState == .activated else { return }
+        try? WCSession.default.updateApplicationContext(["hapticIntensity": intensity])
     }
 
     func sendSOSAlert() {

@@ -77,36 +77,62 @@ final class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
                 }
             }
             if let direction = message["direction"] as? String {
+                // The phone's intensity setting rides along with each buzz;
+                // adopt it so the Watch always matches the phone app.
+                if let intensity = message["intensity"] as? String {
+                    self.hapticIntensity = intensity
+                }
                 self.lastDirection = direction
                 self.playHaptic(for: direction)
             }
         }
     }
 
-    // Apple Watch only exposes preset haptic types — no custom spatial patterns —
-    // so each direction maps to a distinct preset + timing combo as a stand-in.
+    /// Settings mirrored from the phone (fire-and-forget, latest value wins).
+    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        DispatchQueue.main.async {
+            if let intensity = applicationContext["hapticIntensity"] as? String {
+                self.hapticIntensity = intensity
+            }
+        }
+    }
+
+    // Apple Watch only exposes preset haptic types — no custom spatial
+    // patterns, and no amplitude control. The navigation haptics
+    // (.navigationLeftTurn/RightTurn) turned out not to produce a feelable
+    // buzz outside an active navigation session, so each direction maps to
+    // one of the strong, always-available presets instead:
+    //   left  → .directionDown  (falling two-tone)
+    //   right → .success        (rising "da-DUM")
+    //   up    → .directionUp    (rising two-tone)
+    // Perceived strength comes from repeating the pattern: the intensity
+    // setting from the phone app picks the repeat count.
     private func playHaptic(for direction: String) {
         let device = WKInterfaceDevice.current()
-        let intensity = hapticIntensity
 
+        let haptic: WKHapticType
         switch direction {
-        case "left":
-            device.play(.directionDown)
-            if intensity == "high" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { device.play(.directionDown) }
-            }
-        case "right":
-            device.play(.directionUp)
-            if intensity == "high" {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { device.play(.directionUp) }
-            }
-        case "up":
-            device.play(.notification)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { device.play(.notification) }
+        case "left":  haptic = .directionDown
+        case "right": haptic = .success
+        case "up":    haptic = .directionUp
         default:
             // /ws/haptics only ever sends left/right/up -- anything else here
             // means a malformed message got through, not a valid 4th sensor.
-            if intensity != "low" { device.play(.click) }
+            if hapticIntensity != "low" { device.play(.click) }
+            return
+        }
+
+        let repeats: Int
+        switch hapticIntensity {
+        case "low":  repeats = 1
+        case "high": repeats = 5
+        default:     repeats = 3
+        }
+
+        for i in 0..<repeats {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.30) {
+                device.play(haptic)
+            }
         }
     }
 

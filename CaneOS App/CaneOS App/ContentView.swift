@@ -105,7 +105,13 @@ struct ContentView: View {
                     lastHazard: lastHazard,
                     isScanning: isScanning,
                     onScan: requestSceneDescription,
-                    onRefresh: { phoneSession.refreshWatchReachability() }
+                    onRefresh: { phoneSession.refreshWatchReachability() },
+                    onTestHaptic: { direction in
+                        phoneSession.sendHaptic(direction)
+                        // Spoken cue alongside the buzz — also doubles as a
+                        // live test of the ElevenLabs → playback pipeline.
+                        Task { await speakAndPlay(direction.rawValue.capitalized) }
+                    }
                 )
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(Color.caneNavy, for: .navigationBar)
@@ -141,7 +147,7 @@ struct ContentView: View {
             .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
 
             NavigationStack {
-                SafetyView(contactsManager: contactsManager, onSOS: startSOSSequence)
+                SafetyView(contactsManager: contactsManager, onSOS: fireManualSOS)
                     .navigationTitle("Safety")
             }
             .tabItem { Label("Safety", systemImage: "sos.circle.fill") }
@@ -279,6 +285,15 @@ struct ContentView: View {
         await speakAndPlay("Heads up — you've encountered a \(hazardName) at this spot \(times) before.")
     }
 
+    /// Manual SOS from the hold-button: the 3-second hold ring *is* the
+    /// confirmation, so this fires immediately with no extra countdown.
+    /// (Hazard-triggered SOS keeps the countdown via startSOSSequence,
+    /// because there the user never made a deliberate gesture to cancel.)
+    private func fireManualSOS() {
+        guard sosCountdown == nil else { return }
+        Task { await fireSOS() }
+    }
+
     private func startSOSSequence() {
         guard sosCountdown == nil else { return }
         sosCountdown = 5
@@ -369,6 +384,9 @@ struct HomeView: View {
     let isScanning: Bool
     let onScan: () -> Void
     let onRefresh: () async -> Void
+    let onTestHaptic: (HapticSensorDirection) -> Void
+
+    @State private var lastTestSent: HapticSensorDirection?
 
     var body: some View {
         ZStack {
@@ -379,11 +397,71 @@ struct HomeView: View {
                     watchPill
                     if let hazard = lastHazard { lastAlertCard(hazard) }
                     scanButton
+                    hapticTestCard
                 }
                 .padding()
             }
             .refreshable { await onRefresh() }
         }
+    }
+
+    // MARK: Haptic test buttons (dev/testing)
+
+    /// Sends a direction through the exact same PhoneSessionManager →
+    /// WCSession → Watch path the /ws/haptics socket uses, so a buzz here
+    /// proves the whole phone→Watch leg works before the hardware exists.
+    private var hapticTestCard: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "applewatch.radiowaves.left.and.right")
+                    .foregroundColor(.caneBlue)
+                Text("TEST WATCH HAPTICS")
+                    .font(.caption.bold())
+                    .foregroundColor(.caneBlue)
+                Spacer()
+                if let sent = lastTestSent {
+                    Text("Sent: \(sent.rawValue)")
+                        .font(.caption)
+                        .foregroundColor(Color(white: 0.55))
+                }
+            }
+
+            HStack(spacing: 10) {
+                hapticTestButton(.left,  icon: "arrow.turn.up.left",  label: "Left")
+                hapticTestButton(.up,    icon: "arrow.up",            label: "Up")
+                hapticTestButton(.right, icon: "arrow.turn.up.right", label: "Right")
+            }
+
+            Text(isWatchConnected
+                 ? "Buzzes your Apple Watch — keep the Watch app open."
+                 : "Watch not reachable — open the Watch app and try again.")
+                .font(.caption2)
+                .foregroundColor(isWatchConnected ? Color(white: 0.45) : .orange)
+        }
+        .padding(16)
+        .background(Color.caneCard)
+        .cornerRadius(16)
+    }
+
+    private func hapticTestButton(_ direction: HapticSensorDirection,
+                                  icon: String, label: String) -> some View {
+        Button {
+            lastTestSent = direction
+            onTestHaptic(direction)
+        } label: {
+            VStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.title2)
+                Text(label)
+                    .font(.caption.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Color.caneNavy.opacity(0.6))
+            .foregroundColor(.white)
+            .cornerRadius(12)
+        }
+        .accessibilityLabel("Test \(label) haptic on Apple Watch")
     }
 
     private var statusCard: some View {
@@ -1538,6 +1616,9 @@ struct HistoryView: View {
             insights = nil
             return
         }
+        // Two-way sync first, so incidents logged before sign-in get
+        // backfilled into Atlas and the aggregation counts match the list.
+        await store.pullFromAtlas(userId: uid)
         insights = await store.fetchInsights(userId: uid)
     }
 

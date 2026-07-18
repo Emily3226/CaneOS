@@ -171,6 +171,20 @@ final class IncidentStore: ObservableObject {
                 filter: ["userId": userId],
                 sort: ["date": -1]
             )
+
+            // Two-way sync. Backfill: local incidents that never reached
+            // Atlas (logged before signing in, or while offline) get pushed
+            // up, so cloud aggregations (the Insights card) count the same
+            // incidents the History list shows.
+            let cloudIds = Set(docs.compactMap { $0["id"] as? String })
+            let localOnly = incidents.filter { !cloudIds.contains($0.id.uuidString) }
+            if !localOnly.isEmpty {
+                try? await AtlasClient.shared.insertMany(
+                    collection: "incidents",
+                    documents: localOnly.map { $0.atlasDoc(userId: userId) }
+                )
+            }
+
             let fetched = docs.compactMap { Incident(atlasDoc: $0) }
             let existingIds = Set(incidents.map(\.id))
             let newOnes = fetched.filter { !existingIds.contains($0.id) }
