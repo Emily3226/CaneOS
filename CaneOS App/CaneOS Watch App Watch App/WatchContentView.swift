@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct WatchContentView: View {
+struct ContentView: View {
     @StateObject private var session = WatchSessionManager.shared
 
     var body: some View {
