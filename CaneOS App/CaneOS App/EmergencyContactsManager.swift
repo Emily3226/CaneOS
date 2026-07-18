@@ -1,4 +1,6 @@
 import Foundation
+import Combine
+import SwiftUI
 
 enum ContactPriority: String, Codable {
     case primary, secondary, none
@@ -48,8 +50,15 @@ final class EmergencyContactsManager: ObservableObject {
         return primary + secondary + rest
     }
 
-    func add(name: String, phoneNumber: String, priority: ContactPriority = .none) {
-        if priority != .none {
+    func add(name: String, phoneNumber: String, priority: ContactPriority = .none, bumpExistingPrimaryToSecondary: Bool = false) {
+        if priority == .primary && bumpExistingPrimaryToSecondary {
+            for i in contacts.indices where contacts[i].priority == .secondary {
+                contacts[i].priority = .none
+            }
+            for i in contacts.indices where contacts[i].priority == .primary {
+                contacts[i].priority = .secondary
+            }
+        } else if priority != .none {
             for i in contacts.indices where contacts[i].priority == priority {
                 contacts[i].priority = .none
             }
@@ -60,6 +69,36 @@ final class EmergencyContactsManager: ObservableObject {
 
     func remove(at offsets: IndexSet) {
         contacts.remove(atOffsets: offsets)
+        save()
+    }
+
+    /// Edit an existing contact. Pass `bumpExistingPrimaryToSecondary: true` to move
+    /// the current primary to secondary instead of clearing it when promoting a new primary.
+    func update(
+        id: UUID,
+        name: String,
+        phoneNumber: String,
+        priority: ContactPriority,
+        bumpExistingPrimaryToSecondary: Bool = false
+    ) {
+        if priority == .primary && bumpExistingPrimaryToSecondary {
+            // Clear any existing secondary first, then promote old primary → secondary
+            for i in contacts.indices where contacts[i].priority == .secondary && contacts[i].id != id {
+                contacts[i].priority = .none
+            }
+            for i in contacts.indices where contacts[i].priority == .primary && contacts[i].id != id {
+                contacts[i].priority = .secondary
+            }
+        } else if priority != .none {
+            for i in contacts.indices where contacts[i].priority == priority && contacts[i].id != id {
+                contacts[i].priority = .none
+            }
+        }
+        if let i = contacts.firstIndex(where: { $0.id == id }) {
+            contacts[i].name        = name
+            contacts[i].phoneNumber = phoneNumber
+            contacts[i].priority    = priority
+        }
         save()
     }
 
