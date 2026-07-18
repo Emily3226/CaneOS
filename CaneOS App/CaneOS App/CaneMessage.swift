@@ -75,3 +75,26 @@ enum CaneHazardChannelEvent: Decodable {
         }
     }
 }
+
+// MARK: - /ws/status
+//
+// SYSTEM HEALTH FLOW. Unthrottled but rare by nature -- fires only on an
+// actual state transition, not on a poll/heartbeat cadence:
+//   {"event": "camera_offline" | "camera_restored", "timestamp": ...}
+// Kept as its own strict Decodable type/socket (rather than folded into
+// /ws/hazards) since it's a different concern -- hardware health, not a
+// detected obstacle -- with its own tiny two-value vocabulary.
+
+enum CameraStatusEvent: String, Decodable {
+    case cameraOffline = "camera_offline"
+    case cameraRestored = "camera_restored"
+}
+
+struct StatusMessage: Decodable {
+    let event: CameraStatusEvent
+    let timestamp: Double
+
+    enum CodingKeys: String, CodingKey {
+        case event, timestamp
+    }
+}
