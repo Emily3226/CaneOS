@@ -59,8 +59,10 @@ final class SOSManager: NSObject, CLLocationManagerDelegate {
         locationContinuation = nil
     }
 
-    /// Sends the SOS alert automatically (no user interaction) by emailing
-    /// each contact's carrier SMS gateway address -- e.g.
+    private var updateTask: Task<Void, Never>?
+
+    /// Sends the initial SOS alert automatically (no user interaction) by
+    /// emailing each contact's carrier SMS gateway address -- e.g.
     /// "6135551234@txt.bell.ca" -- which the carrier delivers as a text.
     /// This sidesteps needing a full SMS-provider account (Twilio etc.),
     /// whose trial tiers require pre-verifying every recipient number,
@@ -72,6 +74,57 @@ final class SOSManager: NSObject, CLLocationManagerDelegate {
         resendAPIKey: String,
         fromEmail: String
     ) async throws {
+        try await sendLocationText(
+            to: contacts,
+            location: location,
+            resendAPIKey: resendAPIKey,
+            fromEmail: fromEmail,
+            isFollowUp: false
+        )
+    }
+
+    /// Starts resending a fresh location text every `interval` seconds so
+    /// contacts effectively get a "live" trail of updates rather than one
+    /// static pin from the moment SOS fired. Best-effort -- a failed send
+    /// on one cycle doesn't stop the loop, it just tries again next time.
+    /// Call `stopLiveUpdates()` when the SOS is cancelled or resolved.
+    func startLiveUpdates(
+        to contacts: [EmergencyContact],
+        resendAPIKey: String,
+        fromEmail: String,
+        interval: TimeInterval = 90
+    ) {
+        updateTask?.cancel()
+        updateTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(interval))
+                guard !Task.isCancelled else { return }
+                if let location = try? await self.requestLocation() {
+                    try? await self.sendLocationText(
+                        to: contacts,
+                        location: location,
+                        resendAPIKey: resendAPIKey,
+                        fromEmail: fromEmail,
+                        isFollowUp: true
+                    )
+                }
+            }
+        }
+    }
+
+    func stopLiveUpdates() {
+        updateTask?.cancel()
+        updateTask = nil
+    }
+
+    private func sendLocationText(
+        to contacts: [EmergencyContact],
+        location: CLLocation,
+        resendAPIKey: String,
+        fromEmail: String,
+        isFollowUp: Bool
+    ) async throws {
         guard !resendAPIKey.isEmpty, !fromEmail.isEmpty else {
             throw SOSError.missingEmailCredentials
         }
@@ -80,7 +133,9 @@ final class SOSManager: NSObject, CLLocationManagerDelegate {
         }
 
         let locationLink = "https://maps.apple.com/?ll=\(location.coordinate.latitude),\(location.coordinate.longitude)"
-        let message = "I need help. My location: \(locationLink)"
+        let message = isFollowUp
+            ? "Location update: \(locationLink)"
+            : "I need help. My location: \(locationLink)"
 
         try await withThrowingTaskGroup(of: Void.self) { group in
             for contact in contacts {

@@ -226,6 +226,7 @@ struct ContentView: View {
         sosTask = nil
         sosCountdown = nil
         phoneSession.sendSOSClear()
+        sosManager.stopLiveUpdates()
     }
 
     private func fireSOS() async {
@@ -244,6 +245,15 @@ struct ContentView: View {
             try await sosManager.sendEmergencyAlert(
                 to: contactsManager.contacts,
                 location: location,
+                resendAPIKey: Config.resendAPIKey,
+                fromEmail: Config.resendFromEmail
+            )
+
+            // Keep contacts updated with a fresh location text every
+            // ~90s for as long as the SOS stays active, instead of one
+            // static pin from the moment it fired.
+            sosManager.startLiveUpdates(
+                to: contactsManager.contacts,
                 resendAPIKey: Config.resendAPIKey,
                 fromEmail: Config.resendFromEmail
             )
