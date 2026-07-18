@@ -100,21 +100,24 @@ final class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
     // Apple Watch only exposes preset haptic types — no custom spatial
     // patterns, and no amplitude control. The navigation haptics
     // (.navigationLeftTurn/RightTurn) turned out not to produce a feelable
-    // buzz outside an active navigation session, so each direction maps to
-    // one of the strong, always-available presets instead:
-    //   left  → .directionDown  (falling two-tone)
-    //   right → .success        (rising "da-DUM")
-    //   up    → .directionUp    (rising two-tone)
-    // Perceived strength comes from repeating the pattern: the intensity
-    // setting from the phone app picks the repeat count.
+    // buzz outside an active navigation session. And on a single wrist,
+    // similar presets at the same rhythm are hard to tell apart — so left
+    // and right differ in BOTH haptic weight and rhythm:
+    //   left  → slow, heavy thuds       (.failure, ~0.60s apart)  "THUD……THUD……"
+    //   right → rapid-fire ripple       (.success, ~0.16s apart)  "dududududu"
+    //   up    → steady rising two-tones (.directionUp, 0.25s apart)
+    // Perceived strength comes from repetition; the intensity setting from
+    // the phone app scales the pattern length.
     private func playHaptic(for direction: String) {
         let device = WKInterfaceDevice.current()
 
         let haptic: WKHapticType
+        let gap: TimeInterval
+        let baseCount: Int   // pulses at "low"; scaled up by intensity below
         switch direction {
-        case "left":  haptic = .directionDown
-        case "right": haptic = .success
-        case "up":    haptic = .directionUp
+        case "left":  haptic = .failure;     gap = 0.60; baseCount = 2
+        case "right": haptic = .success;     gap = 0.16; baseCount = 5
+        case "up":    haptic = .directionUp; gap = 0.25; baseCount = 2
         default:
             // /ws/haptics only ever sends left/right/up -- anything else here
             // means a malformed message got through, not a valid 4th sensor.
@@ -122,15 +125,20 @@ final class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
             return
         }
 
-        let repeats: Int
+        let multiplier: Int
         switch hapticIntensity {
-        case "low":  repeats = 1
-        case "high": repeats = 5
-        default:     repeats = 3
+        case "low":  multiplier = 1
+        case "high": multiplier = 3
+        default:     multiplier = 2
         }
+        let repeats = baseCount * multiplier
 
+        // Timer-app-strength trick: lead with a heavy .notification thump
+        // (the same haptic family the system Timer alert uses) to grab the
+        // wrist, then play the direction-identifying rhythm.
+        device.play(.notification)
         for i in 0..<repeats {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.30) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.40 + Double(i) * gap) {
                 device.play(haptic)
             }
         }

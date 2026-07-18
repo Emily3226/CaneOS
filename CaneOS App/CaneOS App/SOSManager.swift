@@ -1,4 +1,65 @@
- private var updateTask: Task<Void, Never>?
+import Foundation
+import CoreLocation
+
+final class SOSManager: NSObject, CLLocationManagerDelegate {
+    private let locationManager = CLLocationManager()
+    private var locationContinuation: CheckedContinuation<CLLocation, Error>?
+    private var authContinuation: CheckedContinuation<CLAuthorizationStatus, Never>?
+
+    override init() {
+        super.init()
+        locationManager.delegate = self
+        locationManager.desiredAccuracy = kCLLocationAccuracyBest
+    }
+
+    /// Fetches the current location, first waiting for the user to actually
+    /// respond to the permission dialog if authorization hasn't been decided
+    /// yet, rather than racing `requestLocation()` against the system prompt.
+    func requestLocation() async throws -> CLLocation {
+        let status = locationManager.authorizationStatus
+
+        let resolvedStatus: CLAuthorizationStatus
+        if status == .notDetermined {
+            resolvedStatus = await withCheckedContinuation { continuation in
+                self.authContinuation = continuation
+                locationManager.requestWhenInUseAuthorization()
+            }
+        } else {
+            resolvedStatus = status
+        }
+
+        guard resolvedStatus == .authorizedWhenInUse || resolvedStatus == .authorizedAlways else {
+            throw SOSError.locationPermissionDenied
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            self.locationContinuation = continuation
+            locationManager.requestLocation()
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        guard let authContinuation else { return }
+        let status = manager.authorizationStatus
+        if status != .notDetermined {
+            self.authContinuation = nil
+            authContinuation.resume(returning: status)
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        if let location = locations.first {
+            locationContinuation?.resume(returning: location)
+            locationContinuation = nil
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        locationContinuation?.resume(throwing: error)
+        locationContinuation = nil
+    }
+
+    private var updateTask: Task<Void, Never>?
 
     /// Sends the initial SOS alert automatically (no user interaction) by
     /// emailing each contact's carrier SMS gateway address -- e.g.
