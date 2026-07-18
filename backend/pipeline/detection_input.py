@@ -20,6 +20,8 @@ from typing import Iterator
 
 from PIL import Image
 
+from pipeline import tof_input
+
 # ---------------------------------------------------------------------------
 # Stage 1: escalation thresholds. Kept as module-level constants so they're
 # easy to find and tune without hunting through function bodies.
@@ -35,19 +37,47 @@ CONFIDENCE_THRESHOLD = 0.5
 
 def should_escalate(detection: dict) -> bool:
     """
-    Stage 1 filter: decide whether a raw detection is even worth treating as
-    a potential hazard, before any throttling or Gemini calls happen.
+    Stage 1 filter: decide whether a detection is even worth treating as a
+    potential hazard, before any throttling or Gemini calls happen.
 
     Returns True only if the object is close enough (distance_m below
     DISTANCE_THRESHOLD_M) AND the detector is confident enough (confidence
     above CONFIDENCE_THRESHOLD). Both conditions must hold -- a very close
     but low-confidence blip (sensor noise) shouldn't escalate, and neither
     should a confident detection of something far away.
+
+    Requires attach_distance() to have already run on the detection: the
+    camera (OAK-1-AF) has no depth perception, so a raw camera detection
+    has no distance_m of its own -- distance is sourced from ToF at
+    detection-time, not carried by the camera.
     """
     return (
         detection["distance_m"] < DISTANCE_THRESHOLD_M
         and detection["confidence"] > CONFIDENCE_THRESHOLD
     )
+
+
+def attach_distance(detection: dict) -> dict:
+    """
+    Stage 1 (pre-filter): attach a distance_m to a raw camera detection by
+    looking up the current ToF reading for that detection's direction.
+
+    The camera has no depth sensing of its own, so distance has to come
+    from the separate ToF units. "center" isn't one of the three physical
+    ToF sensors (left/right/up) -- for a center-direction detection we use
+    whichever of left/right is closer, since a straight-ahead obstacle
+    would show up on at least one of the two forward-facing sensors.
+
+    Returns a new dict (does not mutate the input) with distance_m added
+    alongside the original fields.
+    """
+    tof = tof_input.read_all_tof()
+    direction = detection["direction"]
+    if direction == "center":
+        distance_m = min(tof["left"], tof["right"])
+    else:
+        distance_m = tof[direction]
+    return {**detection, "distance_m": distance_m}
 
 
 # ---------------------------------------------------------------------------
@@ -61,15 +91,17 @@ _OBJECT_CLASSES = ("person", "pole", "bicycle", "curb", "vehicle", "chair")
 def _make_detection(
     object_class: str,
     direction: str,
-    distance_m: float,
     confidence: float,
 ) -> dict:
+    # No distance_m here -- the real OAK-1-AF camera has no depth
+    # perception, so a raw detection never carries distance. Distance is
+    # attached separately, from ToF, via attach_distance() at the point
+    # main.py processes each detection.
     return {
         "timestamp": time.time(),
         "object_class": object_class,
         "direction": direction,
         "confidence": round(max(0.0, min(1.0, confidence)), 2),
-        "distance_m": round(max(0.05, distance_m), 2),
     }
 
 
@@ -78,15 +110,19 @@ def mock_detection_stream(simulate_crash: bool = False) -> Iterator[dict]:
     Fake detection generator standing in for the real hardware feed.
 
     Normal mode: yields one plausible detection every 1-3 seconds, roughly
-    uniform over random object classes / directions / distances -- enough
-    variety to exercise should_escalate() without spamming hazards.
+    uniform over random object classes / directions -- enough variety to
+    exercise should_escalate() (after attach_distance()) without spamming
+    hazards.
 
     Crash mode (simulate_crash=True): yields rapid, jittery detections that
     share the same rough object_class/direction (so they *should* dedup as
-    one ongoing hazard) but with fluctuating distance/confidence, arriving
-    every 0.1-0.4 seconds continuously for about 2 minutes. This is what a
-    chaotic, sustained hazard looks like on the wire, and it's the scenario
-    HazardThrottle exists to survive without spamming narration.
+    one ongoing hazard), arriving every 0.1-0.4 seconds continuously for
+    about 2 minutes. Distance still fluctuates realistically in this mode
+    -- that now comes for free from tof_input's own mock dip simulation,
+    since attach_distance() re-reads ToF for every one of these rapid-fire
+    detections. This is what a chaotic, sustained hazard looks like on the
+    wire, and it's the scenario HazardThrottle exists to survive without
+    spamming narration.
 
     This is a plain generator so it's trivial to swap for a real source --
     e.g. an async generator reading off a socket/queue from the hardware
@@ -100,7 +136,6 @@ def mock_detection_stream(simulate_crash: bool = False) -> Iterator[dict]:
         yield _make_detection(
             object_class=random.choice(_OBJECT_CLASSES),
             direction=random.choice(_DIRECTIONS),
-            distance_m=random.uniform(0.3, 4.0),
             confidence=random.uniform(0.3, 0.99),
         )
         time.sleep(random.uniform(1.0, 3.0))
@@ -115,18 +150,12 @@ def _simulate_crash_stream(duration_s: float = 120.0) -> Iterator[dict]:
     """
     object_class = random.choice(_OBJECT_CLASSES)
     direction = random.choice(_DIRECTIONS)
-    base_distance = random.uniform(0.8, 1.8)
 
     start = time.time()
     while time.time() - start < duration_s:
-        # Jitter distance/confidence around a slowly-drifting baseline so
-        # this looks like a real object bobbling in the frame, not a
-        # perfectly repeated packet.
-        base_distance = max(0.3, base_distance + random.uniform(-0.3, 0.2))
         yield _make_detection(
             object_class=object_class,
             direction=direction,
-            distance_m=base_distance,
             confidence=random.uniform(0.55, 0.98),
         )
 
@@ -137,7 +166,6 @@ def _simulate_crash_stream(duration_s: float = 120.0) -> Iterator[dict]:
             yield _make_detection(
                 object_class=random.choice(_OBJECT_CLASSES),
                 direction=random.choice(_DIRECTIONS),
-                distance_m=random.uniform(0.5, 2.5),
                 confidence=random.uniform(0.5, 0.95),
             )
 

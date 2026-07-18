@@ -1,9 +1,23 @@
 """
-Wires the full pipeline together and runs it as a background task alongside
-uvicorn:
+Wires the full pipeline together and runs it as three independent
+background tasks alongside uvicorn:
 
-    mock detection stream -> should_escalate() -> HazardThrottle.should_narrate()
-        -> capture_frame() -> analyze_hazard() -> broadcast_hazard()
+    mock detection stream -> attach_distance() -> should_escalate()
+        -> capture_frame() -> narration_queue.push_nowait({"source": "camera", ...})
+
+    mock ToF -> haptic_loop's check_thresholds() -> broadcast_haptic() (immediate, unthrottled)
+                                                  \\-> narration_queue.push_nowait({"source": "tof_up", ...})
+                                                      (fire-and-forget, "up" only)
+
+    narration_queue -> narration_worker: HazardThrottle.should_narrate() (one shared
+        instance, checked BEFORE analysis) -> analyze_hazard() or
+        narration_templates.build_up_hazard() -> broadcast_hazard()
+
+Camera detections and overhead ("up") ToF triggers are two different
+origins that meet at narration_worker.py and share one HazardThrottle
+instance and one /ws/hazards broadcast from there on -- see
+narration_worker.py's docstring for why the throttle check happens before
+(not after) Gemini/template analysis.
 
 Run with:
     python -m pipeline.main                  # normal mode
@@ -27,9 +41,16 @@ load_dotenv()
 
 import uvicorn
 
-from pipeline.detection_input import capture_frame, mock_detection_stream, should_escalate
-from pipeline.gemini_stage import analyze_hazard
-from pipeline.server import DEFAULT_PORT, app, broadcast_hazard, get_local_ip
+from pipeline import narration_queue
+from pipeline.detection_input import (
+    attach_distance,
+    capture_frame,
+    mock_detection_stream,
+    should_escalate,
+)
+from pipeline.haptic_loop import run_haptic_loop
+from pipeline.narration_worker import run_narration_worker
+from pipeline.server import DEFAULT_PORT, app, get_local_ip
 from pipeline.throttle import HazardThrottle
 
 logger = logging.getLogger(__name__)
@@ -37,12 +58,12 @@ logger = logging.getLogger(__name__)
 
 async def run_pipeline(simulate_crash: bool) -> None:
     """
-    The core pipeline loop. Runs forever as a background asyncio task
-    alongside uvicorn, feeding every escalated + throttled detection
-    through Gemini and out over the WebSocket.
+    Camera-originated half of the narration pipeline. Filters raw
+    detections and pushes the ones worth analyzing onto narration_queue --
+    throttling and Gemini analysis now happen in narration_worker.py, the
+    single place both narration origins (camera and overhead ToF) meet.
     """
     stream = mock_detection_stream(simulate_crash=simulate_crash)
-    throttle = HazardThrottle()
 
     logger.info("Pipeline started (simulate_crash=%s)", simulate_crash)
 
@@ -57,15 +78,22 @@ async def run_pipeline(simulate_crash: bool) -> None:
         # `async for detection in real_stream:` and drop the to_thread call.
         detection = await asyncio.to_thread(next, stream)
 
+        # The camera has no depth perception -- attach_distance() has to
+        # run before should_escalate() can even look at distance_m.
+        detection = attach_distance(detection)
+
         if not should_escalate(detection):
             continue
-        if not throttle.should_narrate(detection):
-            continue
 
+        # Captured here so the queued event is self-contained. This does
+        # mean a frame gets captured for every escalated detection, even
+        # ones the throttle will end up dropping -- a small change from
+        # the old capture-only-if-narrating order, but capture_frame() is
+        # cheap/non-blocking (unlike the Gemini call throttle still gates
+        # downstream in narration_worker), so it's a low-cost tradeoff for
+        # having one unified queue event shape.
         frame = capture_frame()
-        hazard = await analyze_hazard(frame, detection)
-        await broadcast_hazard(hazard)
-        logger.info("Broadcast hazard: %s", hazard)
+        narration_queue.push_nowait({"source": "camera", "detection": detection, "frame": frame})
 
 
 def _resolve_simulate_crash(cli_flag: bool) -> bool:
@@ -95,11 +123,27 @@ def main() -> None:
 
     args = parse_args()
     app.state.simulate_crash = _resolve_simulate_crash(args.simulate_crash)
-    app.state.on_startup = lambda: run_pipeline(app.state.simulate_crash)
+
+    # One shared HazardThrottle instance for both narration origins
+    # (camera detections and overhead ToF triggers) -- narration_worker is
+    # the only thing that calls it, so dedup/cooldown/rate-cap state stays
+    # consistent across both.
+    throttle = HazardThrottle()
+
+    # Three fully independent background tasks -- the lifespan hook in
+    # server.py starts each as its own asyncio task, so a slow Gemini call
+    # in narration_worker can never delay run_haptic_loop or run_pipeline,
+    # or vice versa.
+    app.state.on_startup_tasks = [
+        lambda: run_pipeline(app.state.simulate_crash),
+        run_haptic_loop,
+        lambda: run_narration_worker(throttle),
+    ]
 
     local_ip = get_local_ip()
     print(f"Health check:        http://{local_ip}:{DEFAULT_PORT}/health")
     print(f"Swift app should connect to: ws://{local_ip}:{DEFAULT_PORT}/ws/hazards")
+    print(f"Haptic reflex path:  ws://{local_ip}:{DEFAULT_PORT}/ws/haptics")
     if app.state.simulate_crash:
         print("CRASH SIMULATION MODE enabled -- sustained chaotic hazard stream for ~2 minutes.")
 

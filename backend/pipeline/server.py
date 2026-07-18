@@ -9,8 +9,10 @@ extra fields): {hazard_type, direction, urgency, spoken_description}.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import socket
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -25,16 +27,19 @@ DEFAULT_PORT = 8765
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # main.py sets app.state.on_startup (a zero-arg async callable) before
-    # calling uvicorn.run(), so this stays free of any main.py-specific
-    # pipeline wiring -- server.py only knows "run this coroutine as a
-    # background task while the app is up, if one was provided."
-    startup_hook = getattr(app.state, "on_startup", None)
-    task = asyncio.create_task(startup_hook()) if startup_hook is not None else None
+    # main.py sets app.state.on_startup_tasks to a list of zero-arg async
+    # callables before calling uvicorn.run(), so this stays free of any
+    # main.py-specific pipeline wiring -- server.py only knows "run each of
+    # these coroutines as its own independent background task while the
+    # app is up." Each gets its own task (not one task sequentially
+    # awaiting all of them) specifically so the hazard pipeline and the
+    # haptic loop run concurrently and neither can block the other.
+    startup_hooks = getattr(app.state, "on_startup_tasks", None) or []
+    tasks = [asyncio.create_task(hook()) for hook in startup_hooks]
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
 
 
@@ -102,6 +107,59 @@ async def broadcast_hazard(hazard: dict) -> None:
         "spoken_description": hazard["spoken_description"],
     }
     await manager.broadcast(payload)
+
+
+# ---------------------------------------------------------------------------
+# Haptic reflex path: independent of everything above. Own connection
+# manager, own endpoint, own (non-)throttling rules.
+# ---------------------------------------------------------------------------
+
+haptic_manager = ConnectionManager()
+
+# Safety valve, NOT intentional throttling -- HazardThrottle's cooldown/dedup
+# logic is a deliberate UX choice for narration; this cap has no such
+# purpose. It exists purely so a runaway bug (e.g. a ToF glitch or a logic
+# error in haptic_loop polling far faster than intended) can't flood the
+# WebSocket / Watch. Under normal operation this should never bind.
+_HAPTIC_RATE_CAP_PER_SEC = 20
+_haptic_send_timestamps: "collections.deque[float]" = collections.deque()
+
+
+def _haptic_rate_limit_ok() -> bool:
+    now = time.monotonic()
+    while _haptic_send_timestamps and now - _haptic_send_timestamps[0] > 1.0:
+        _haptic_send_timestamps.popleft()
+    if len(_haptic_send_timestamps) >= _HAPTIC_RATE_CAP_PER_SEC:
+        return False
+    _haptic_send_timestamps.append(now)
+    return True
+
+
+@app.websocket("/ws/haptics")
+async def ws_haptics(websocket: WebSocket) -> None:
+    await haptic_manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        haptic_manager.disconnect(websocket)
+
+
+async def broadcast_haptic(direction: str) -> None:
+    """
+    Called by haptic_loop.py whenever a ToF reading crosses the near
+    threshold for a direction. Sends exactly {"direction": direction} --
+    one message per triggered direction, not combined -- to every
+    connected Swift client. Valid directions: "left", "right", "up".
+    """
+    if not _haptic_rate_limit_ok():
+        logger.warning(
+            "Haptic safety-valve rate cap hit (%d/sec) -- dropping direction=%s",
+            _HAPTIC_RATE_CAP_PER_SEC,
+            direction,
+        )
+        return
+    await haptic_manager.broadcast({"direction": direction})
 
 
 def get_local_ip() -> str:
