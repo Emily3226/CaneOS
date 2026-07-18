@@ -1,35 +1,14 @@
-# Xcode
-#
-build/
-*.pbxuser
-!default.pbxuser
-*.mode1v3
-!default.mode1v3
-*.mode2v3
-!default.mode2v3
-*.perspectivev3
-!default.perspectivev3
-xcuserdata/
-*.moved-aside
-*.xccheckout
-*.xcscmblueprint
-
-*.hmap
-
-.build/
-Packages/
-Package.pins
-Package.resolved
-*.xcodeproj/*
-!*.xcodeproj/project.pbxproj
-!*.xcodeproj/xcshareddata/
-!*.xcworkspace/contents.xcworkspacedata
-/*.gcno
-
-DerivedData/
-
 .DS_Store
-
-node_modules/
-
-CaneOS App/CaneOS App/Config.swift
+# Secrets / local env
+backend/.env
+backend/.env.local
+backend/.vercel/
+# Dependencies & build junk
+backend/venv/
+backend/node_modules/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+# Xcode user state
+**/xcuserdata/
+DerivedData/
