@@ -9,6 +9,39 @@ extension Color {
     static let caneRed  = Color(red: 0.90, green: 0.10, blue: 0.10)
 }
 
+// MARK: - Logo mark
+
+struct CaneMarkView: View {
+    var height: CGFloat = 40
+    var color: Color = .caneBlue
+
+    var body: some View {
+        Canvas { context, size in
+            let lw = size.width * 0.16
+            let cx = size.width * 0.78
+
+            // Shaft
+            var shaft = Path()
+            shaft.move(to: CGPoint(x: cx, y: size.height * 0.30))
+            shaft.addLine(to: CGPoint(x: cx, y: size.height))
+            context.stroke(shaft, with: .color(color),
+                           style: StrokeStyle(lineWidth: lw, lineCap: .round))
+
+            // Hook handle — arcs from shaft-top over to the left
+            var hook = Path()
+            hook.move(to: CGPoint(x: cx, y: size.height * 0.30))
+            hook.addCurve(
+                to: CGPoint(x: cx - size.width * 0.70, y: size.height * 0.28),
+                control1: CGPoint(x: cx, y: 0),
+                control2: CGPoint(x: cx - size.width * 0.70, y: 0)
+            )
+            context.stroke(hook, with: .color(color),
+                           style: StrokeStyle(lineWidth: lw, lineCap: .round))
+        }
+        .frame(width: height * 0.75, height: height)
+    }
+}
+
 // MARK: - Root
 
 struct ContentView: View {
@@ -33,13 +66,26 @@ struct ContentView: View {
             NavigationStack {
                 HomeView(
                     isConnected: isHardwareConnected,
-                    isWatchReachable: phoneSession.isWatchReachable,
+                    isWatchConnected: phoneSession.isWatchConnected,
                     lastHazard: lastHazard,
                     isScanning: isScanning,
-                    onScan: requestSceneDescription
+                    onScan: requestSceneDescription,
+                    onRefresh: { phoneSession.refreshWatchReachability() }
                 )
-                .navigationTitle("Cane OS")
-                .navigationBarTitleDisplayMode(.large)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbarBackground(Color.caneNavy, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        HStack(spacing: 8) {
+                            CaneMarkView(height: 22, color: .caneBlue)
+                            Text("CaneOS")
+                                .font(.system(size: 17, weight: .black))
+                                .foregroundColor(.white)
+                                .tracking(1.5)
+                        }
+                    }
+                }
             }
             .tabItem { Label("Home", systemImage: "house.fill") }
 
@@ -182,10 +228,11 @@ struct ContentView: View {
 
 struct HomeView: View {
     let isConnected: Bool
-    let isWatchReachable: Bool
+    let isWatchConnected: Bool
     let lastHazard: CaneMessage?
     let isScanning: Bool
     let onScan: () -> Void
+    let onRefresh: () async -> Void
 
     var body: some View {
         ZStack {
@@ -199,6 +246,7 @@ struct HomeView: View {
                 }
                 .padding()
             }
+            .refreshable { await onRefresh() }
         }
     }
 
@@ -237,15 +285,15 @@ struct HomeView: View {
 
     private var watchPill: some View {
         HStack(spacing: 8) {
-            Image(systemName: isWatchReachable ? "applewatch" : "applewatch.slash")
-                .foregroundColor(isWatchReachable ? .caneBlue : Color(white: 0.40))
-            Text(isWatchReachable ? "Watch connected" : "Watch not reachable")
+            Image(systemName: isWatchConnected ? "applewatch" : "applewatch.slash")
+                .foregroundColor(isWatchConnected ? .caneBlue : Color(white: 0.40))
+            Text(isWatchConnected ? "Watch connected" : "Watch not reachable")
                 .font(.subheadline)
                 .foregroundColor(Color(white: 0.60))
             Spacer()
         }
         .padding(.horizontal, 4)
-        .accessibilityLabel(isWatchReachable
+        .accessibilityLabel(isWatchConnected
             ? "Apple Watch connected"
             : "Apple Watch not reachable")
     }

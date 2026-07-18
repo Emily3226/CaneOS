@@ -1,6 +1,37 @@
 import SwiftUI
 import WatchKit
 
+// MARK: - Logo mark
+
+private struct CaneMarkView: View {
+    var height: CGFloat = 16
+    var color: Color
+
+    var body: some View {
+        Canvas { context, size in
+            let lw = size.width * 0.16
+            let cx = size.width * 0.78
+
+            var shaft = Path()
+            shaft.move(to: CGPoint(x: cx, y: size.height * 0.30))
+            shaft.addLine(to: CGPoint(x: cx, y: size.height))
+            context.stroke(shaft, with: .color(color),
+                           style: StrokeStyle(lineWidth: lw, lineCap: .round))
+
+            var hook = Path()
+            hook.move(to: CGPoint(x: cx, y: size.height * 0.30))
+            hook.addCurve(
+                to: CGPoint(x: cx - size.width * 0.70, y: size.height * 0.28),
+                control1: CGPoint(x: cx, y: 0),
+                control2: CGPoint(x: cx - size.width * 0.70, y: 0)
+            )
+            context.stroke(hook, with: .color(color),
+                           style: StrokeStyle(lineWidth: lw, lineCap: .round))
+        }
+        .frame(width: height * 0.75, height: height)
+    }
+}
+
 // MARK: - Root
 
 struct ContentView: View {
@@ -31,6 +62,15 @@ struct WatchMainView: View {
             Color.black.ignoresSafeArea()
 
             VStack(spacing: 6) {
+                // Logo wordmark
+                HStack(spacing: 4) {
+                    CaneMarkView(height: 16, color: Color(red: 0.12, green: 0.46, blue: 1.00))
+                    Text("CaneOS")
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundColor(.white)
+                        .tracking(0.8)
+                }
+
                 // Connection pill
                 HStack(spacing: 4) {
                     Circle()

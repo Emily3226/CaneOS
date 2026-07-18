@@ -1,6 +1,7 @@
 import Foundation
 import WatchConnectivity
 import WatchKit
+internal import Combine
 
 final class WatchSessionManager: NSObject, ObservableObject, WCSessionDelegate {
     static let shared = WatchSessionManager()
