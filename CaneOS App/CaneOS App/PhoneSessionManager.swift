@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import WatchConnectivity
 
 final class PhoneSessionManager: NSObject, ObservableObject, WCSessionDelegate {

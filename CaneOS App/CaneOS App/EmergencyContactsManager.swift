@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import Combine
 
 struct EmergencyContact: Identifiable, Codable {
     let id: UUID
