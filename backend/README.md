@@ -17,6 +17,11 @@ Four independent background tasks, all wired up in `pipeline/main.py`:
   `/ws/status`, completely independent of the three paths above (see
   "Camera health monitoring" below).
 
+Alongside these background tasks, `POST /query` (added 2026-07-18) is a
+plain synchronous REST endpoint for the "Hey Cane" on-demand Q&A feature --
+see "On-demand Q&A" below. It's a one-question-one-answer request, not an
+ambient stream, so it isn't a background task at all.
+
 Pipeline stages (see `pipeline/`):
 
 1. **detection_input.py** -- filters raw detections (`should_escalate`),
@@ -35,7 +40,10 @@ Pipeline stages (see `pipeline/`):
    used for both narration origins.
 5. **gemini_stage.py** -- sends the frame + detection to Gemini
    (`gemini-3.5-flash`) and parses the structured hazard JSON. Never called
-   for overhead hazards (see below).
+   for overhead hazards (see below). Also holds `answer_query()`, a
+   separate open-ended-question prompt/flow for "Hey Cane" (see below) --
+   a different prompt and no JSON mode, but the same client/model and
+   retry-then-fallback pattern as `analyze_hazard()`.
 6. **narration_templates.py** -- fixed spoken-description templates for
    overhead hazards, picked by distance, no Gemini call involved.
 7. **narration_worker.py** -- consumes `narration_queue`, runs the shared
@@ -50,8 +58,9 @@ Pipeline stages (see `pipeline/`):
    narration_queue push for "up" triggers is fire-and-forget and adds no
    dependency on either).
 10. **server.py** -- FastAPI app: `GET /health`, `WS /ws/hazards`,
-    `WS /ws/haptics`, and `WS /ws/status`, each with their own connection
-    manager.
+    `WS /ws/haptics`, `WS /ws/status` (each with their own connection
+    manager), and `POST /query` (plain synchronous REST, no connection
+    manager needed).
 11. **heartbeat_input.py** -- mock periodic camera heartbeat, independent
     of detection events; the integration point for the real hardware
     heartbeat feed.
@@ -62,7 +71,11 @@ Pipeline stages (see `pipeline/`):
     polls for timeout, both driving one `CameraWatchdog`; never imports
     `throttle.py`, `gemini_stage.py`, `narration_queue.py`, `haptic_loop.py`,
     or `haptic_arbiter.py`.
-14. **main.py** -- wires all four background tasks together.
+14. **conversation_memory.py** -- MongoDB-backed conversation history for
+    the "Hey Cane" on-demand Q&A feature (see below); the only module that
+    talks to Mongo.
+15. **main.py** -- wires all four background tasks together (`POST /query`
+    needs no task of its own -- it's a plain request/response endpoint).
 
 ## macOS / Linux setup
 
@@ -73,6 +86,9 @@ source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 # then edit .env and paste your real key into GEMINI_API_KEY=
+# and MONGODB_URI= -- same Atlas connection string vercel-backend/ uses
+# (see vercel-backend/README.md if you need to create one). MONGODB_DB_NAME
+# defaults to "caneos", matching vercel-backend's default.
 ```
 
 ## Running the server
@@ -273,6 +289,74 @@ the same idea for testing the explicit-error path instead of silence.
 `mock_heartbeat_stream()` with an async generator reading the real
 hardware's heartbeat channel, yielding the same
 `{"status": "ok"|"error", "timestamp": ...}` shape.
+
+## On-demand Q&A ("Hey Cane", `POST /query`)
+
+A Swift teammate handles wake-word detection ("Hey Cane"), speech-to-text,
+and speaking the final answer via ElevenLabs. This backend's job is just
+the middle of that pipeline: given a question, answer it about the
+current scene.
+
+This is a **plain synchronous REST endpoint, not a WebSocket** -- one
+question in, one answer out, nothing queued or broadcast. That matches the
+feature itself (a one-off question-answer exchange, not an ambient
+stream) and keeps it structurally distinct from `/ws/hazards`,
+`/ws/haptics`, and `/ws/status`.
+
+```
+POST /query
+{"question": "what's around me right now?", "session_id": "user_abc123"}
+
+-> {"answer": "You're in a hallway with a door open on your right and a chair a few feet ahead."}
+```
+
+What happens per request: `conversation_memory.get_recent_context()` pulls
+that session's last few exchanges -> `detection_input.capture_frame()`
+grabs the current frame (same function the hazard path already uses, not
+duplicated) -> `gemini_stage.answer_query()` sends the frame + question +
+context to Gemini with an open-ended prompt (a different prompt from
+`analyze_hazard()`'s structured hazard-JSON one -- no fixed response
+shape, no JSON mode, just a natural-language answer meant to be read
+aloud) -> `conversation_memory.save_exchange()` persists the new exchange
+-> the answer goes straight back in the HTTP response.
+
+**Fully independent of the throttle/narration path**: no
+`HazardThrottle`, no `narration_queue`, no dedup or cooldown of any kind.
+Every explicit question gets answered -- suppression only makes sense for
+ongoing ambient hazard narration the user didn't ask for, not for
+something they just asked out loud.
+
+**Conversation memory lives in MongoDB now**, in the *same* Atlas
+database `vercel-backend/` already uses for contacts/incidents (see
+`conversation_memory.py`'s module docstring for why this is the same
+database but necessarily a separate client -- Node.js/Vercel and this
+Python backend are different processes/languages, so they can't literally
+share a connection object, only the same `MONGODB_URI`/`MONGODB_DB_NAME`).
+A new `conversations` collection stores only explicit Q&A exchanges
+(`session_id`, `question`, `answer`, `timestamp`) -- ambient hazard
+narrations are never written here.
+
+**Integration point for the Swift side**: generate and persist a stable
+`session_id` per user/session (e.g. once per app install, or once per
+"conversation" if you want context to reset periodically) and pass it with
+every `/query` request. Context is scoped entirely by `session_id` -- there's
+no cross-session memory.
+
+**Manual test path**:
+
+```bash
+source venv/bin/activate
+curl -X POST http://localhost:8765/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "what is in front of me?", "session_id": "test-session-1"}'
+```
+
+You should get back `{"answer": "..."}` with no prior context (a new
+`session_id`). POST a second question with the *same* `session_id` and the
+first exchange should now be part of the context Gemini sees -- add a
+temporary `logger.info(prompt)` in `gemini_stage._build_query_prompt()`
+(or right before the Gemini call) if you want to see the assembled prompt
+directly while verifying this.
 
 ## Testing the throttle specifically
 

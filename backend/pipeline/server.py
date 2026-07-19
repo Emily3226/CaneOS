@@ -293,6 +293,40 @@ async def sos_relay(payload: dict) -> dict:
     return {"sent": sent, "results": results}
 
 
+# ---------------------------------------------------------------------------
+# "Hey Cane" on-demand Q&A: a plain synchronous REST endpoint, not a
+# WebSocket -- one question in, one answer out, nothing queued or
+# broadcast. Deliberately independent of throttle.py/narration_queue.py/
+# narration_worker.py -- every explicit question gets answered, no
+# dedup/cooldown applies here (that's for the ambient hazard-narration
+# path, not something the user directly asked for).
+# ---------------------------------------------------------------------------
+
+from pydantic import BaseModel as _BaseModel
+
+from pipeline import conversation_memory as _conversation_memory
+from pipeline.detection_input import capture_frame as _query_capture_frame
+from pipeline.gemini_stage import answer_query as _answer_query
+
+
+class QueryRequest(_BaseModel):
+    question: str
+    session_id: str
+
+
+class QueryResponse(_BaseModel):
+    answer: str
+
+
+@app.post("/query")
+async def query(request: QueryRequest) -> QueryResponse:
+    recent_context = await _conversation_memory.get_recent_context(request.session_id)
+    frame = _query_capture_frame()
+    answer = await _answer_query(frame, request.question, recent_context)
+    await _conversation_memory.save_exchange(request.session_id, request.question, answer)
+    return QueryResponse(answer=answer)
+
+
 def get_local_ip() -> str:
     """
     Best-effort discovery of this machine's LAN IP (not 127.0.0.1), since

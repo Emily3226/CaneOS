@@ -138,3 +138,76 @@ async def analyze_hazard(image_bytes: bytes, detection: dict) -> dict:
 
     logger.error("Gemini hazard analysis failed after retry, using fallback: %s", last_error)
     return dict(_FALLBACK_RESULT)
+
+
+# ---------------------------------------------------------------------------
+# "Hey Cane" on-demand Q&A -- a separate prompt/flow from the structured
+# hazard-JSON path above. Open-ended question answering about the current
+# scene, not hazard detection, so no JSON mode and no fixed response shape;
+# just a plain natural-language answer meant to be read aloud by ElevenLabs
+# on the Swift side.
+# ---------------------------------------------------------------------------
+
+_QUERY_FALLBACK_ANSWER = "Sorry, I couldn't process that right now."
+
+_QUERY_PROMPT_TEMPLATE = """\
+You are an assistant helping a blind cane user understand their \
+surroundings. Here is the current camera view and their question.
+
+Question: {question}
+
+Recent conversation for context (oldest first, may be empty if this is the \
+first question):
+{context}
+
+Answer naturally and concisely, suitable for being read aloud by a \
+text-to-speech voice. Do not use markdown or lists -- plain spoken \
+sentences only.
+"""
+
+
+def _build_query_prompt(question: str, recent_context: list) -> str:
+    if recent_context:
+        context_lines = "\n".join(
+            f"- Q: {turn['question']}\n  A: {turn['answer']}" for turn in recent_context
+        )
+    else:
+        context_lines = "(none yet)"
+    return _QUERY_PROMPT_TEMPLATE.format(question=question, context=context_lines)
+
+
+async def _call_gemini_query(client: "genai.Client", image_bytes: bytes, question: str, recent_context: list) -> str:
+    response = await client.aio.models.generate_content(
+        model=MODEL_NAME,
+        contents=[
+            _build_query_prompt(question, recent_context),
+            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        ],
+    )
+    return response.text.strip()
+
+
+async def answer_query(image_bytes: bytes, question: str, recent_context: list) -> str:
+    """
+    "Hey Cane" entry point: answers an open-ended question about the
+    current scene, using recent conversation history for context. Returns
+    plain text, ready to be spoken by the Swift app's TTS.
+
+    Never raises -- on any failure this logs the error and returns a safe
+    fallback string, same reasoning as analyze_hazard(): a missed answer
+    is far better than a crashed request. One retry attempt on transient
+    failures, matching analyze_hazard()'s pattern.
+    """
+    last_error: Exception | None = None
+    for attempt in range(2):  # initial attempt + 1 retry
+        try:
+            client = _get_client()  # see analyze_hazard()'s comment: must stay inside the try
+            return await _call_gemini_query(client, image_bytes, question, recent_context)
+        except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
+            last_error = exc
+            logger.warning(
+                "Gemini query answer failed (attempt %d/2): %s", attempt + 1, exc
+            )
+
+    logger.error("Gemini query answer failed after retry, using fallback: %s", last_error)
+    return _QUERY_FALLBACK_ANSWER
