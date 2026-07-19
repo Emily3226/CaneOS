@@ -206,7 +206,7 @@ def _simulate_crash_stream(duration_s: float = 120.0) -> Iterator[dict]:
 # listener, different port. Hardcoded to match her code exactly (no env
 # var), consistent with those modules' BOARD_IP convention: specific to
 # this physical board, not a per-deployment config value.
-BOARD_IP = "172.20.10.2"
+BOARD_IP = "172.20.10.7"
 FRAME_PORT = 8090
 
 # Frames are much larger than ToF's tiny JSON response (0.5s timeout

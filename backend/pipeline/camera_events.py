@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # tof_input.py's ToF endpoint, different port. Hardcoded to match her code
 # exactly (no env var), consistent with tof_input.py's BOARD_IP convention:
 # this is specific to this physical board, not a per-deployment config value.
-BOARD_IP = "172.20.10.2"
+BOARD_IP = "172.20.10.7"
 EVENT_PORT = 5005
 
 _REQUIRED_KEYS = ("timestamp", "object_class", "direction", "confidence")
